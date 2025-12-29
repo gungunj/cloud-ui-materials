@@ -31,6 +31,15 @@
       type: boolean
       default: true
       description: 是否显示声波
+    - name: sampleRateOptions
+      title: 采样率
+      type: number
+      default: 16000
+      description: 采样率
+    - name: sampleBitOptions
+      title: 采样位数
+      type: number
+      default: 16
   methods:
     - name: startRecord
       title: 开始录制
