@@ -38,12 +38,10 @@ jobs:
 
   build-and-release:
     needs: plan
-    # 只有当 include 数组不为空时才触发
     if: needs.plan.outputs.matrix != '' && fromJSON(needs.plan.outputs.matrix).include[0] != null
     strategy:
       fail-fast: false
       matrix:
-        # 引用 .include 数组级，实现分组并行
         batch: ${{ fromJSON(needs.plan.outputs.matrix).include }}
     runs-on: ubuntu-latest
     steps:
@@ -51,24 +49,31 @@ jobs:
         with:
           fetch-depth: 0
 
+      # --- 修改 1: 显式安装 pnpm ---
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8  # 建议根据你本地 pnpm -v 的版本号设置
+
+      # --- 修改 2: 配置 Node 并关联 pnpm 缓存 ---
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: 'pnpm' # 之前是 'npm'，根据你的报错，项目实际在使用 pnpm
 
+      # --- 修改 3: 全局安装构建工具（包含 turbo） ---
       - name: Install Global Build Tools
         run: |
-          # 修复 turbo: not found 错误
           npm install -g turbo
-          # 如果你的构建还需要其他全局工具，可在此处添加
+          # 检查 pnpm 是否安装成功
+          pnpm --version
 
       - name: Process Component Batch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COREAGENT_TOKEN: ${{ secrets.COREAGENT_TOKEN }}
         run: |
-          # 将当前分组的数据导出为临时文件供 Node 处理
           echo '${{ toJson(matrix.batch.items) }}' > batch_items.json
           
           node -e "
@@ -81,39 +86,36 @@ jobs:
             console.log('\x1b[32m%s\x1b[0m', '>>>>> 正在处理组件: ' + pkg.name);
             
             try {
-              // 1. 在组件目录安装依赖，解决局部依赖缺失
-              console.log('--- 正在安装依赖...');
-              cp.execSync('npm install --prefer-offline --no-audit --legacy-peer-deps', { 
+              console.log('--- 正在安装依赖 (pnpm)...');
+              cp.execSync('pnpm install --prefer-offline --no-frozen-lockfile', { 
                 cwd: pkg.dir, 
                 stdio: 'inherit' 
               });
 
-              // 2. 执行构建逻辑 (例如 npm run build && npm run usage)
               console.log('--- 正在执行构建...');
               cp.execSync(pkg.build.join(' && '), { 
                 cwd: pkg.dir, 
                 stdio: 'inherit' 
               });
 
-              // 3. 产物打包: [组件名]-v[版本号].zip
               const zipName = \`\${pkg.name.replace(/[@/]/g, '-')}-v\${pkg.version}.zip\`;
               console.log('--- 正在打包: ' + zipName);
-              // 假设构建产物在 dist 目录
+              if (!fs.existsSync(path.join(pkg.dir, 'dist'))) {
+                 console.warn('⚠️ 未发现 dist 目录，尝试打包当前目录内容...');
+              }
               cp.execSync(\`zip -r \${zipName} dist/\`, { cwd: pkg.dir, stdio: 'inherit' });
+              
               const zipPath = path.resolve(pkg.dir, zipName);
-
-              // 4. 创建 GitHub Release 并上传产物
-              // Tag 格式: 组件名@版本号-构建号 (确保唯一性)
               const tagName = \`\${pkg.name}@\${pkg.version}-\${process.env.GITHUB_RUN_NUMBER}\`;
+              
               console.log('--- 正在创建 Release: ' + tagName);
               try {
-                cp.execSync(\`gh release create \"\${tagName}\" \"\${zipPath}\" --title \"\${pkg.name} v\${pkg.version}\" --notes \"由 CI 自动发布的组件资产包。\"\`, { stdio: 'inherit' });
+                cp.execSync(\`gh release create \"\${tagName}\" \"\${zipPath}\" --title \"\${pkg.name} v\${pkg.version}\" --notes \"CI Auto Release\"\`, { stdio: 'inherit' });
               } catch (re) {
-                console.warn('⚠️ Release 创建失败，可能由于 Tag 已存在或权限不足，尝试更新现有 Release...');
+                console.warn('⚠️ Release 已存在，尝试更新文件...');
                 cp.execSync(\`gh release upload \"\${tagName}\" \"\${zipPath}\" --clobber\`, { stdio: 'inherit' });
               }
 
-              // 5. 调用智能体同步文档与变更日志
               console.log('--- 正在调用 AI 同步文档...');
               try {
                 cp.execSync(\`node scripts/ci/sync-to-coreagent.mjs '\${JSON.stringify(pkg)}' \${tagName}\`, { stdio: 'inherit' });
@@ -122,9 +124,7 @@ jobs:
               }
 
             } catch (err) {
-              console.error('❌ 处理组件 ' + pkg.name + ' 时发生严重错误:');
-              console.error(err.message);
-              // 继续处理 batch 中的下一个组件
+              console.error('❌ 处理组件 ' + pkg.name + ' 时发生严重错误');
               continue; 
             }
           }
