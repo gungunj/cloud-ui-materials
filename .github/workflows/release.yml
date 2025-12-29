@@ -30,10 +30,8 @@ jobs:
         env:
           PLAN_ALL: ${{ github.event.inputs.plan_all == 'true' && '1' || '0' }}
         run: |
-          # 执行脚本并捕捉 JSON 输出
           RESULT=$(node scripts/ci/plan-changed-packages.mjs)
           echo "matrix=$RESULT" >> $GITHUB_OUTPUT
-          # 调试打印 Batch 数量，确保小于 256
           echo "Debug: Batch Count = $(echo $RESULT | jq '.include | length')"
 
   build-and-release:
@@ -49,24 +47,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      # --- 修改 1: 显式安装 pnpm ---
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 8  # 建议根据你本地 pnpm -v 的版本号设置
+          version: 8
 
-      # --- 修改 2: 配置 Node 并关联 pnpm 缓存 ---
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'pnpm' # 之前是 'npm'，根据你的报错，项目实际在使用 pnpm
+          cache: 'pnpm'
 
-      # --- 修改 3: 全局安装构建工具（包含 turbo） ---
       - name: Install Global Build Tools
         run: |
           npm install -g turbo
-          # 检查 pnpm 是否安装成功
           pnpm --version
 
       - name: Process Component Batch
@@ -85,21 +79,30 @@ jobs:
           for (const pkg of items) {
             console.log('\x1b[32m%s\x1b[0m', '>>>>> 正在处理组件: ' + pkg.name);
             
+            // --- 阶段 1: 精准依赖安装 (带隔离捕获) ---
             try {
-              console.log('--- 正在安装依赖 (pnpm)...');
-              cp.execSync('pnpm install --prefer-offline --no-frozen-lockfile', { 
-                cwd: pkg.dir, 
+              // 使用 filter 仅安装当前包及其依赖，--ignore-scripts 增加容错性
+              console.log('--- [Step 1] 正在精准安装依赖 (Filter: ' + pkg.name + ')...');
+              cp.execSync('pnpm install --filter ' + pkg.name + '... --prefer-offline --no-frozen-lockfile --ignore-scripts', { 
+                cwd: process.cwd(), 
                 stdio: 'inherit' 
               });
+            } catch (installError) {
+              console.error('⚠️ [警告] 组件 ' + pkg.name + ' 依赖安装失败 (如私有库 404)。跳过该组件构建。');
+              continue; // 错误隔离：处理下一个 pkg
+            }
 
-              console.log('--- 正在执行构建...');
+            // --- 阶段 2: 构建、打包与发布 (带隔离捕获) ---
+            try {
+              console.log('--- [Step 2] 正在执行构建...');
               cp.execSync(pkg.build.join(' && '), { 
                 cwd: pkg.dir, 
                 stdio: 'inherit' 
               });
 
               const zipName = \`\${pkg.name.replace(/[@/]/g, '-')}-v\${pkg.version}.zip\`;
-              console.log('--- 正在打包: ' + zipName);
+              console.log('--- [Step 3] 正在打包: ' + zipName);
+              
               if (!fs.existsSync(path.join(pkg.dir, 'dist'))) {
                  console.warn('⚠️ 未发现 dist 目录，尝试打包当前目录内容...');
               }
@@ -108,7 +111,7 @@ jobs:
               const zipPath = path.resolve(pkg.dir, zipName);
               const tagName = \`\${pkg.name}@\${pkg.version}-\${process.env.GITHUB_RUN_NUMBER}\`;
               
-              console.log('--- 正在创建 Release: ' + tagName);
+              console.log('--- [Step 4] 正在创建 Release: ' + tagName);
               try {
                 cp.execSync(\`gh release create \"\${tagName}\" \"\${zipPath}\" --title \"\${pkg.name} v\${pkg.version}\" --notes \"CI Auto Release\"\`, { stdio: 'inherit' });
               } catch (re) {
@@ -116,7 +119,7 @@ jobs:
                 cp.execSync(\`gh release upload \"\${tagName}\" \"\${zipPath}\" --clobber\`, { stdio: 'inherit' });
               }
 
-              console.log('--- 正在调用 AI 同步文档...');
+              console.log('--- [Step 5] 正在同步 AI 文档...');
               try {
                 cp.execSync(\`node scripts/ci/sync-to-coreagent.mjs '\${JSON.stringify(pkg)}' \${tagName}\`, { stdio: 'inherit' });
               } catch (ae) {
@@ -124,7 +127,7 @@ jobs:
               }
 
             } catch (err) {
-              console.error('❌ 处理组件 ' + pkg.name + ' 时发生严重错误');
+              console.error('❌ [错误] 处理组件 ' + pkg.name + ' 构建阶段失败，继续处理下一个。');
               continue; 
             }
           }
