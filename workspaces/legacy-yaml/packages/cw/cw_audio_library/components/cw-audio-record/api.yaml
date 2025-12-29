@@ -40,6 +40,11 @@
       title: 采样位数
       type: number
       default: 16
+    - name: sampleRateOptionss
+      title: 采样率
+      type: number
+      default: 16000
+      description: 采样率
   methods:
     - name: startRecord
       title: 开始录制
