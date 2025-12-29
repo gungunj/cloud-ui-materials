@@ -34,6 +34,13 @@ namespace extensions.cw_amap_new.viewComponents {
     lalg: nasl.core.String;
 
     @Prop({
+      title: '导航坐标',
+      description: '导航坐标',
+      setter: { concept: 'InputSetter' },
+    })
+    navLngLat: nasl.core.String;
+
+    @Prop({
       title: '导航名称',
       description: '导航页标题显示的名称',
       setter: { concept: 'InputSetter' },
