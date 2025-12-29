@@ -30,6 +30,7 @@ jobs:
         env:
           PLAN_ALL: ${{ github.event.inputs.plan_all == 'true' && '1' || '0' }}
         run: |
+          # 执行增量/全量扫描脚本
           RESULT=$(node scripts/ci/plan-changed-packages.mjs)
           echo "matrix=$RESULT" >> $GITHUB_OUTPUT
           echo "Debug: Batch Count = $(echo $RESULT | jq '.include | length')"
@@ -40,6 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 通过分组避免 GitHub 256 矩阵限制
         batch: ${{ fromJSON(needs.plan.outputs.matrix).include }}
     runs-on: ubuntu-latest
     steps:
@@ -56,6 +58,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          # 注意：在强制隔离模式下，缓存可能因不走全局 lock 效果减弱，但仍建议保留
           cache: 'pnpm'
 
       - name: Install Global Build Tools
@@ -79,55 +82,66 @@ jobs:
           for (const pkg of items) {
             console.log('\x1b[32m%s\x1b[0m', '>>>>> 正在处理组件: ' + pkg.name);
             
-            // --- 阶段 1: 精准依赖安装 (带隔离捕获) ---
+            // --- 阶段 1: 真正彻底的隔离安装 ---
             try {
-              // 使用 filter 仅安装当前包及其依赖，--ignore-scripts 增加容错性
-              console.log('--- [Step 1] 正在精准安装依赖 (Filter: ' + pkg.name + ')...');
-              cp.execSync('pnpm install --filter ' + pkg.name + '... --prefer-offline --no-frozen-lockfile --ignore-scripts', { 
-                cwd: process.cwd(), 
-                stdio: 'inherit' 
-              });
-            } catch (installError) {
-              console.error('⚠️ [警告] 组件 ' + pkg.name + ' 依赖安装失败 (如私有库 404)。跳过该组件构建。');
-              continue; // 错误隔离：处理下一个 pkg
-            }
-
-            // --- 阶段 2: 构建、打包与发布 (带隔离捕获) ---
-            try {
-              console.log('--- [Step 2] 正在执行构建...');
-              cp.execSync(pkg.build.join(' && '), { 
+              console.log('--- [Step 1] 正在独立安装 ' + pkg.name + ' 的依赖 (隔离模式)...');
+              
+              /** * 核心修复逻辑：
+               * 1. --pnpm-workspace=false: 强制 pnpm 忽略根目录的 pnpm-workspace.yaml
+               * 2. --no-frozen-lockfile: 不去校验全局的 pnpm-lock.yaml，避免被其他 404 包干扰
+               * 3. --ignore-scripts: 防止执行可能依赖 Monorepo 环境的生命周期脚本
+               */
+              cp.execSync('pnpm install --prefer-offline --no-frozen-lockfile --ignore-scripts --pnpm-workspace=false', { 
                 cwd: pkg.dir, 
                 stdio: 'inherit' 
               });
+            } catch (installError) {
+              console.error('⚠️ [警告] 组件 ' + pkg.name + ' 本身依赖存在问题 (如 404)。已跳过该组件。');
+              continue; // 错误隔离：处理 batch 中下一个组件
+            }
 
+            // --- 阶段 2: 构建、打包与发布 ---
+            try {
+              console.log('--- [Step 2] 正在执行构建...');
+              // 确保子目录的 .bin 在 PATH 最前面，优先使用隔离安装的工具
+              const localBin = path.join(pkg.dir, 'node_modules/.bin');
+              cp.execSync(pkg.build.join(' && '), { 
+                cwd: pkg.dir, 
+                stdio: 'inherit',
+                env: { ...process.env, PATH: localBin + ':' + process.env.PATH }
+              });
+
+              // 生成 ZIP 文件名
               const zipName = \`\${pkg.name.replace(/[@/]/g, '-')}-v\${pkg.version}.zip\`;
-              console.log('--- [Step 3] 正在打包: ' + zipName);
+              console.log('--- [Step 3] 正在打包产物: ' + zipName);
               
+              // 兼容性处理：如果 dist 不存在打印警告
               if (!fs.existsSync(path.join(pkg.dir, 'dist'))) {
-                 console.warn('⚠️ 未发现 dist 目录，尝试打包当前目录内容...');
+                 console.warn('⚠️ 未发现 dist 目录，请检查构建输出路径。');
               }
               cp.execSync(\`zip -r \${zipName} dist/\`, { cwd: pkg.dir, stdio: 'inherit' });
               
               const zipPath = path.resolve(pkg.dir, zipName);
               const tagName = \`\${pkg.name}@\${pkg.version}-\${process.env.GITHUB_RUN_NUMBER}\`;
-              
-              console.log('--- [Step 4] 正在创建 Release: ' + tagName);
+
+              console.log('--- [Step 4] 正在创建 GitHub Release: ' + tagName);
               try {
-                cp.execSync(\`gh release create \"\${tagName}\" \"\${zipPath}\" --title \"\${pkg.name} v\${pkg.version}\" --notes \"CI Auto Release\"\`, { stdio: 'inherit' });
+                // 使用 gh CLI 独立发布每个组件
+                cp.execSync(\`gh release create \"\${tagName}\" \"\${zipPath}\" --title \"\${pkg.name} v\${pkg.version}\" --notes \"由 CI 自动发布的组件独立资产包。\"\`, { stdio: 'inherit' });
               } catch (re) {
-                console.warn('⚠️ Release 已存在，尝试更新文件...');
+                console.warn('⚠️ Release 已存在，尝试更新产物文件...');
                 cp.execSync(\`gh release upload \"\${tagName}\" \"\${zipPath}\" --clobber\`, { stdio: 'inherit' });
               }
 
-              console.log('--- [Step 5] 正在同步 AI 文档...');
+              console.log('--- [Step 5] 正在调用智能体同步文档...');
               try {
                 cp.execSync(\`node scripts/ci/sync-to-coreagent.mjs '\${JSON.stringify(pkg)}' \${tagName}\`, { stdio: 'inherit' });
               } catch (ae) {
-                console.error('❌ AI 同步失败');
+                console.error('❌ AI 文档同步失败');
               }
 
             } catch (err) {
-              console.error('❌ [错误] 处理组件 ' + pkg.name + ' 构建阶段失败，继续处理下一个。');
+              console.error('❌ [错误] 处理组件 ' + pkg.name + ' 时发生严重故障。');
               continue; 
             }
           }
