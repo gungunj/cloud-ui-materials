@@ -44,7 +44,7 @@ namespace extensions.cw_audio_player.viewComponents {
         concept: 'InputSetter'
       }
     })
-    speedListd: nasl.collection.List<nasl.core.Decimal> = [0.5, 1.0, 1.5, 2.0];
+    speedListsss: nasl.collection.List<nasl.core.Decimal> = [0.5, 1.0, 1.5, 2.0];
     @Prop({
       title: '下拉框是否插入body',
       description: '倍速选择下拉框是否插入body',
