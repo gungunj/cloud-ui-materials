@@ -2,7 +2,7 @@ name: Component Release & AI Doc Sync
 
 on:
   push:
-    branches: [ "test/ci-branch" ] # 仅在测试分支推送时触发
+    branches: [ "test-ci-branch" ] # 仅在测试分支推送时触发
   workflow_dispatch:              # 开启手动触发按钮
 
 jobs:
