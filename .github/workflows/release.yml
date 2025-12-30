@@ -2,9 +2,10 @@ name: Component PR Artifacts (Fault-Tolerant)
 
 on:
   push:
-    branches: [ "test-ci-branch" ]
+    branches: ["test-ci-branch", "main"]
   pull_request:
-    branches: [ "main", "test-ci-branch" ]
+    types: [closed]
+    branches: ["main", "test-ci-branch"]
   workflow_dispatch:
 
 jobs:
@@ -26,7 +27,13 @@ jobs:
 
   build-and-comment:
     needs: plan
-    if: needs.plan.outputs.matrix != '' && fromJSON(needs.plan.outputs.matrix).include[0] != null
+    if: |
+      (needs.plan.outputs.matrix != '' && fromJSON(needs.plan.outputs.matrix).include[0] != null) &&
+      (
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true)
+      )
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -46,81 +55,51 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'pnpm'
+          cache: "pnpm"
 
-      - name: Fault-Tolerant Setup & Install
+      - name: Setup Dependencies (Stubs & Config)
+        run: node scripts/ci/setup-dependencies.mjs
+
+      - name: Configure Turbo
+        run: node scripts/ci/configure-turbo.mjs
+
+      - name: Install Dependencies
         run: |
-          # 1. 动态创建 pnpm 拦截钩子
-          cat << 'EOF' > .pnpmfile.cjs
-          module.exports = {
-            hooks: {
-              readPackage(pkg) {
-                // 列出所有导致 ECONNRESET 的内网私有包名
-                const problematicPackages = [
-                  '@oa/iframe-channel',
-                  '@popo-bridge/web',
-                  '@ysf/fetch'
-                ];
-
-                const removeDeps = (deps) => {
-                  if (!deps) return;
-                  problematicPackages.forEach(name => {
-                    if (deps[name]) {
-                      delete deps[name];
-                    }
-                  });
-                };
-
-                removeDeps(pkg.dependencies);
-                removeDeps(pkg.devDependencies);
-                removeDeps(pkg.peerDependencies);
-                return pkg;
-              }
-            }
-          }
-          EOF
-
-          # 2. 强制使用官方源并执行安装
-          echo "registry=https://registry.npmjs.org/" > .npmrc
-          echo "🚀 开始容错安装..."
-          # 使用 --no-frozen-lockfile 允许修改后的依赖树通过校验
+          echo "🚀 开始安装依赖..."
+          # pnpm.overrides 已在 package.json 中配置，会自动使用本地 stubs
           pnpm install --prefer-offline --no-frozen-lockfile --ignore-scripts || true
-          
-          # 3. 补装全局工具
-          npm install -g turbo
+
+      - name: Install Turbo
+        run: npm install -g turbo
 
       - name: Build and Package
         run: |
           echo '${{ toJson(matrix.batch.items) }}' > batch_items.json
-          
-          node -e "
-          const fs = require('fs');
-          const cp = require('child_process');
-          const path = require('path');
-          const items = JSON.parse(fs.readFileSync('batch_items.json', 'utf8'));
-          let summary = '';
+          node scripts/ci/build-and-package.mjs
+        env:
+          # Turbo 远程缓存配置（可选）
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
 
-          for (const pkg of items) {
-            console.log('📦 正在尝试处理: ' + pkg.name);
-            try {
-              // 执行构建，即使缺少某些被删除的私有包也会尝试编译
-              cp.execSync('turbo run build --filter=' + pkg.name, { stdio: 'inherit' });
+      - name: Generate Diff Description and Update Documentation
+        if: github.event_name == 'push'
+        run: node scripts/ci/generate-diff-docs.mjs
+        env:
+          COREAGENT_AK: ${{ secrets.COREAGENT_AK }}
+          COREAGENT_SK: ${{ secrets.COREAGENT_SK }}
 
-              const zipName = \`\${pkg.name.replace(/[@/]/g, '-')}.zip\`;
-              cp.execSync(\`zip -r \${zipName} dist/\`, { cwd: pkg.dir, stdio: 'inherit' });
-              
-              const artifactDir = path.join(process.cwd(), 'upload_artifacts');
-              if (!fs.existsSync(artifactDir)) fs.mkdirSync(artifactDir);
-              fs.renameSync(path.join(pkg.dir, zipName), path.join(artifactDir, zipName));
-              
-              summary += '- ✅ ' + pkg.name + '\\n';
-            } catch (err) {
-              console.warn('⚠️ ' + pkg.name + ' 构建失败（可能缺少私有依赖）');
-              summary += '- ❌ ' + pkg.name + ' (失败)\\n';
-            }
-          }
-          fs.writeFileSync('build_summary.txt', summary);
-          "
+      - name: Generate CHANGELOG
+        if: github.event_name == 'push'
+        run: node scripts/ci/generate-changelog.mjs
+        env:
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Create Git Tags and Commit CHANGELOG
+        if: github.event_name == 'push'
+        run: node scripts/ci/create-tags.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -129,17 +108,44 @@ jobs:
           path: upload_artifacts/*.zip
           retention-days: 7
 
-      - name: Comment on PR
-        if: github.event_name == 'pull_request'
+      - name: Create or Update GitHub Release
+        if: github.event_name == 'push'
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('build_summary.txt', 'utf8');
-            const body = `### 📦 PR 构建产物预览 (Batch ${{ strategy.job-index }})\n\n${summary}\n\n[点击此处进入 Run 详情页下载 Artifacts](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            })
+            const createRelease = require('./scripts/ci/create-release.js');
+            await createRelease({ github, context });
+
+      - name: Find PR Number (for merged PRs)
+        if: github.event_name == 'push'
+        id: find-pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const core = require('@actions/core');
+            const findPR = require('./scripts/ci/find-pr.js');
+            await findPR({ github, context, core });
+
+      - name: Comment on PR
+        if: |
+          (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true) ||
+          (github.event_name == 'push' && steps.find-pr.outputs.pr_number != '')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentPR = require('./scripts/ci/comment-pr.js');
+
+            let prNumber;
+            let isMerged = false;
+
+            if (context.eventName === 'pull_request') {
+              prNumber = context.issue.number;
+              isMerged = context.payload.pull_request?.merged === true || context.payload.action === 'closed';
+            } else if (context.eventName === 'push') {
+              prNumber = parseInt('${{ steps.find-pr.outputs.pr_number }}');
+              isMerged = true;
+            }
+
+            const jobIndex = '${{ strategy.job-index }}';
+
+            await commentPR({ github, context }, prNumber, isMerged, jobIndex);
