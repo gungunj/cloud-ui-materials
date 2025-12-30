@@ -141,12 +141,11 @@ for (const pkg of items) {
     }
 
     // 构建命令执行完成后，查找构建命令自动生成的 zip 文件
-    // zip 文件可能生成在包目录或输出目录中
+    // zip 文件生成在包目录中
     console.log(`🔍 查找构建命令生成的 zip 文件...`);
 
     const possibleZipLocations = [
       pkgDir, // 包目录根目录
-      path.join(pkgDir, foundOutputDir), // 输出目录（如 dist-theme）
     ];
 
     // 查找所有 .zip 文件

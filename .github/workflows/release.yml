@@ -193,7 +193,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Artifacts
+      - name: Upload Artifacts (Individual Files)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/upload-artifacts-individual.mjs
+
+      - name: Upload Artifacts (Batch Upload)
         if: always()
         uses: actions/upload-artifact@v4
         with:
