@@ -47,6 +47,15 @@ namespace extensions.adl.viewComponents {
     weekStart: nasl.core.Integer = 1;
 
     @Prop({
+      title: '周几结束',
+      description: '周几结束',
+      setter: {
+        concept: 'NumberInputSetter',
+      },
+    })
+    weekEnd: nasl.core.Integer = 7;
+
+    @Prop({
       title: '姓名列表',
       description: '形如["阿狸","提莫","盖伦","琴女","安妮"]',
       setter: {
