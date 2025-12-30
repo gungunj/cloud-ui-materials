@@ -1,14 +1,11 @@
-name: Component Release & AI Doc Sync
+name: Component PR Preview & Sync
 
 on:
   push:
     branches: [ "test-ci-branch" ]
+  pull_request:
+    branches: [ "main", "test-ci-branch" ]
   workflow_dispatch:
-    inputs:
-      plan_all:
-        description: '是否全量构建所有组件'
-        required: false
-        default: 'false'
 
 jobs:
   plan:
@@ -19,36 +16,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
       - name: Generate Plan
         id: set-matrix
-        env:
-          PLAN_ALL: ${{ github.event.inputs.plan_all == 'true' && '1' || '0' }}
         run: |
-          # 执行增量/全量扫描脚本
           RESULT=$(node scripts/ci/plan-changed-packages.mjs)
           echo "matrix=$RESULT" >> $GITHUB_OUTPUT
-          echo "Debug: Batch Count = $(echo $RESULT | jq '.include | length')"
 
-  build-and-release:
+  build-and-comment:
     needs: plan
     if: needs.plan.outputs.matrix != '' && fromJSON(needs.plan.outputs.matrix).include[0] != null
     strategy:
       fail-fast: false
       matrix:
-        # 通过分组避免 GitHub 256 矩阵限制
         batch: ${{ fromJSON(needs.plan.outputs.matrix).include }}
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # 必须开启 PR 写入权限以回贴
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
@@ -58,91 +47,70 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # 注意：在强制隔离模式下，缓存可能因不走全局 lock 效果减弱，但仍建议保留
           cache: 'pnpm'
 
-      - name: Install Global Build Tools
+      - name: Authenticate and Install
         run: |
+          echo "registry=https://npm.nie.netease.com/" > .npmrc
+          echo "always-auth=true" >> .npmrc
+          pnpm install --prefer-offline
           npm install -g turbo
-          pnpm --version
 
-      - name: Process Component Batch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COREAGENT_TOKEN: ${{ secrets.COREAGENT_TOKEN }}
+      - name: Build and Package
+        id: build_step
         run: |
           echo '${{ toJson(matrix.batch.items) }}' > batch_items.json
           
+          # 执行构建并记录产物路径
           node -e "
           const fs = require('fs');
           const cp = require('child_process');
           const path = require('path');
           const items = JSON.parse(fs.readFileSync('batch_items.json', 'utf8'));
+          let summary = '';
 
           for (const pkg of items) {
-            console.log('\x1b[32m%s\x1b[0m', '>>>>> 正在处理组件: ' + pkg.name);
-            
-            // --- 阶段 1: 真正彻底的隔离安装 ---
             try {
-              console.log('--- [Step 1] 正在独立安装 ' + pkg.name + ' 的依赖 (隔离模式)...');
-              
-              /** * 核心修复逻辑：
-               * 1. --pnpm-workspace=false: 强制 pnpm 忽略根目录的 pnpm-workspace.yaml
-               * 2. --no-frozen-lockfile: 不去校验全局的 pnpm-lock.yaml，避免被其他 404 包干扰
-               * 3. --ignore-scripts: 防止执行可能依赖 Monorepo 环境的生命周期脚本
-               */
-              cp.execSync('pnpm install --prefer-offline --no-frozen-lockfile --ignore-scripts --pnpm-workspace=false', { 
-                cwd: pkg.dir, 
-                stdio: 'inherit' 
-              });
-            } catch (installError) {
-              console.error('⚠️ [警告] 组件 ' + pkg.name + ' 本身依赖存在问题 (如 404)。已跳过该组件。');
-              continue; // 错误隔离：处理 batch 中下一个组件
-            }
+              console.log('--- 构建: ' + pkg.name);
+              cp.execSync('turbo run build --filter=' + pkg.name, { stdio: 'inherit' });
 
-            // --- 阶段 2: 构建、打包与发布 ---
-            try {
-              console.log('--- [Step 2] 正在执行构建...');
-              // 确保子目录的 .bin 在 PATH 最前面，优先使用隔离安装的工具
-              const localBin = path.join(pkg.dir, 'node_modules/.bin');
-              cp.execSync(pkg.build.join(' && '), { 
-                cwd: pkg.dir, 
-                stdio: 'inherit',
-                env: { ...process.env, PATH: localBin + ':' + process.env.PATH }
-              });
-
-              // 生成 ZIP 文件名
-              const zipName = \`\${pkg.name.replace(/[@/]/g, '-')}-v\${pkg.version}.zip\`;
-              console.log('--- [Step 3] 正在打包产物: ' + zipName);
-              
-              // 兼容性处理：如果 dist 不存在打印警告
-              if (!fs.existsSync(path.join(pkg.dir, 'dist'))) {
-                 console.warn('⚠️ 未发现 dist 目录，请检查构建输出路径。');
-              }
+              const zipName = \`\${pkg.name.replace(/[@/]/g, '-')}.zip\`;
               cp.execSync(\`zip -r \${zipName} dist/\`, { cwd: pkg.dir, stdio: 'inherit' });
               
-              const zipPath = path.resolve(pkg.dir, zipName);
-              const tagName = \`\${pkg.name}@\${pkg.version}-\${process.env.GITHUB_RUN_NUMBER}\`;
-
-              console.log('--- [Step 4] 正在创建 GitHub Release: ' + tagName);
-              try {
-                // 使用 gh CLI 独立发布每个组件
-                cp.execSync(\`gh release create \"\${tagName}\" \"\${zipPath}\" --title \"\${pkg.name} v\${pkg.version}\" --notes \"由 CI 自动发布的组件独立资产包。\"\`, { stdio: 'inherit' });
-              } catch (re) {
-                console.warn('⚠️ Release 已存在，尝试更新产物文件...');
-                cp.execSync(\`gh release upload \"\${tagName}\" \"\${zipPath}\" --clobber\`, { stdio: 'inherit' });
-              }
-
-              console.log('--- [Step 5] 正在调用智能体同步文档...');
-              try {
-                cp.execSync(\`node scripts/ci/sync-to-coreagent.mjs '\${JSON.stringify(pkg)}' \${tagName}\`, { stdio: 'inherit' });
-              } catch (ae) {
-                console.error('❌ AI 文档同步失败');
-              }
-
+              // 移动到统一的产物目录方便上传
+              const artifactDir = path.join(process.cwd(), 'upload_artifacts');
+              if (!fs.existsSync(artifactDir)) fs.mkdirSync(artifactDir);
+              fs.renameSync(path.join(pkg.dir, zipName), path.join(artifactDir, zipName));
+              
+              summary += '- ✅ ' + pkg.name + ' (已打包)\\n';
             } catch (err) {
-              console.error('❌ [错误] 处理组件 ' + pkg.name + ' 时发生严重故障。');
-              continue; 
+              summary += '- ❌ ' + pkg.name + ' (构建失败)\\n';
             }
           }
+          fs.writeFileSync('build_summary.txt', summary);
           "
+
+      # 上传产物到 GitHub Actions
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: components-batch-${{ strategy.job-index }}
+          path: upload_artifacts/*.zip
+          retention-days: 7
+
+      # 在 PR 上自动回复下载引导
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('build_summary.txt', 'utf8');
+            const run_id = context.runId;
+            const commentBody = `### 📦 组件构建完成 (Batch ${{ strategy.job-index }})\n\n${summary}\n\n[点击此处进入 Actions 页面下载产物](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run_id})`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            })
