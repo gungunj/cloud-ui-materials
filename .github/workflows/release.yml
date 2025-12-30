@@ -124,71 +124,71 @@ jobs:
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
 
-      - name: Generate Diff Description and Update Documentation
-        if: github.event_name == 'push'
-        run: node scripts/ci/generate-diff-docs.mjs
-        env:
-          COREAGENT_AK: ${{ secrets.COREAGENT_AK }}
-          COREAGENT_SK: ${{ secrets.COREAGENT_SK }}
+      # - name: Generate Diff Description and Update Documentation
+        # if: github.event_name == 'push'
+      #   run: node scripts/ci/generate-diff-docs.mjs
+      #   env:
+      #     COREAGENT_AK: ${{ secrets.COREAGENT_AK }}
+      #     COREAGENT_SK: ${{ secrets.COREAGENT_SK }}
 
-      - name: Generate CHANGELOG
-        if: github.event_name == 'push'
-        run: node scripts/ci/generate-changelog.mjs
-        env:
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
+      # - name: Generate CHANGELOG
+      #   if: github.event_name == 'push'
+      #   run: node scripts/ci/generate-changelog.mjs
+      #   env:
+      #     GITHUB_SERVER_URL: ${{ github.server_url }}
+      #     GITHUB_REPOSITORY: ${{ github.repository }}
 
-      - name: Create Git Tags and Commit CHANGELOG
-        if: github.event_name == 'push'
-        run: node scripts/ci/create-tags.mjs
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Create Git Tags and Commit CHANGELOG
+      #   if: github.event_name == 'push'
+      #   run: node scripts/ci/create-tags.mjs
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: components-v${{ github.run_number }}-${{ strategy.job-index }}
-          path: upload_artifacts/*.zip
-          retention-days: 7
+      # - name: Upload Artifacts
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: components-v${{ github.run_number }}-${{ strategy.job-index }}
+      #     path: upload_artifacts/*.zip
+      #     retention-days: 7
 
-      - name: Create or Update GitHub Release
-        if: github.event_name == 'push'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const createRelease = require('./scripts/ci/create-release.js');
-            await createRelease({ github, context });
+      # - name: Create or Update GitHub Release
+      #   if: github.event_name == 'push'
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       const createRelease = require('./scripts/ci/create-release.js');
+      #       await createRelease({ github, context });
 
-      - name: Find PR Number (for merged PRs)
-        if: github.event_name == 'push'
-        id: find-pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const core = require('@actions/core');
-            const findPR = require('./scripts/ci/find-pr.js');
-            await findPR({ github, context, core });
+      # - name: Find PR Number (for merged PRs)
+      #   if: github.event_name == 'push'
+      #   id: find-pr
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       const core = require('@actions/core');
+      #       const findPR = require('./scripts/ci/find-pr.js');
+      #       await findPR({ github, context, core });
 
-      - name: Comment on PR
-        if: |
-          (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true) ||
-          (github.event_name == 'push' && steps.find-pr.outputs.pr_number != '')
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const commentPR = require('./scripts/ci/comment-pr.js');
+      # - name: Comment on PR
+      #   if: |
+      #     (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true) ||
+      #     (github.event_name == 'push' && steps.find-pr.outputs.pr_number != '')
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       const commentPR = require('./scripts/ci/comment-pr.js');
 
-            let prNumber;
-            let isMerged = false;
+      #       let prNumber;
+      #       let isMerged = false;
 
-            if (context.eventName === 'pull_request') {
-              prNumber = context.issue.number;
-              isMerged = context.payload.pull_request?.merged === true || context.payload.action === 'closed';
-            } else if (context.eventName === 'push') {
-              prNumber = parseInt('${{ steps.find-pr.outputs.pr_number }}');
-              isMerged = true;
-            }
+      #       if (context.eventName === 'pull_request') {
+      #         prNumber = context.issue.number;
+      #         isMerged = context.payload.pull_request?.merged === true || context.payload.action === 'closed';
+      #       } else if (context.eventName === 'push') {
+      #         prNumber = parseInt('${{ steps.find-pr.outputs.pr_number }}');
+      #         isMerged = true;
+      #       }
 
-            const jobIndex = '${{ strategy.job-index }}';
+      #       const jobIndex = '${{ strategy.job-index }}';
 
-            await commentPR({ github, context }, prNumber, isMerged, jobIndex);
+      #       await commentPR({ github, context }, prNumber, isMerged, jobIndex);
