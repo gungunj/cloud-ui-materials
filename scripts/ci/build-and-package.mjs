@@ -22,6 +22,22 @@ for (const pkg of items) {
     const version = pkgJson.version || '0.0.0';
     const pkgDir = path.resolve(repoRoot, pkg.relDir);
     
+    // 确保该包的依赖已安装（如果 node_modules 缺失）
+    const nodeModulesPath = path.join(pkgDir, 'node_modules');
+    if (!fs.existsSync(nodeModulesPath)) {
+      console.log(`⚠️ ${pkg.name} 的 node_modules 缺失，尝试安装依赖...`);
+      try {
+        // 尝试在该包目录安装依赖
+        execSync('pnpm install --prefer-offline', { 
+          cwd: pkgDir, 
+          stdio: 'inherit',
+          env: { ...process.env, CI: 'true' }
+        });
+      } catch (installErr) {
+        console.warn(`⚠️ ${pkg.name} 依赖安装失败，继续尝试构建: ${installErr.message}`);
+      }
+    }
+    
     // 执行构建，使用 Turbo 的增量构建和缓存
     // --filter 只构建指定包及其依赖
     // --force 强制重新构建（如果需要）

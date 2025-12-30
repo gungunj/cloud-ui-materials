@@ -83,14 +83,37 @@ jobs:
       - name: Configure Turbo
         run: node scripts/ci/configure-turbo.mjs
 
-      - name: Install Dependencies
+      - name: Install Root Dependencies
         run: |
-          echo "🚀 开始安装依赖..."
-          # pnpm.overrides 已在 package.json 中配置，会自动使用本地 stubs
-          pnpm install --prefer-offline --no-frozen-lockfile --ignore-scripts || true
+          echo "🚀 开始安装根目录依赖..."
+          # 安装根目录依赖（包括 turbo），不使用 --ignore-scripts 以触发 postinstall
+          pnpm install --prefer-offline --no-frozen-lockfile || true
+          echo "✅ 根目录依赖安装完成"
 
-      - name: Install Turbo
-        run: npm install -g turbo
+      - name: Install Workspace Dependencies
+        run: |
+          echo "🚀 开始安装各工作区依赖..."
+          # 显式执行工作区安装脚本（确保所有子工作区的依赖都安装）
+          # 这会为每个工作区（legacy-yaml, ts-vue2 等）执行 pnpm install
+          node scripts/mono/install-all-workspaces.mjs || true
+          echo "✅ 工作区依赖安装完成"
+
+      - name: Verify Critical Dependencies
+        run: |
+          echo "🔍 验证关键依赖..."
+          # 检查 turbo 是否可用
+          if ! command -v turbo &> /dev/null; then
+            echo "⚠️ turbo 未找到，尝试全局安装..."
+            npm install -g turbo@2.5.8
+          else
+            echo "✅ turbo 已安装: $(turbo --version)"
+          fi
+          
+          # 验证 pnpm 工作区是否正确识别
+          echo "📦 验证 pnpm 工作区..."
+          pnpm list --depth=0 --json > /dev/null 2>&1 && echo "✅ pnpm 工作区配置正常" || echo "⚠️ pnpm 工作区配置可能有问题"
+          
+          echo "✅ 依赖验证完成"
 
       - name: Build and Package
         run: |
