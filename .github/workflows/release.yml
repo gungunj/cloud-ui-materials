@@ -108,14 +108,16 @@ jobs:
           else
             echo "✅ turbo 已安装: $(turbo --version)"
           fi
-          
+
           # 验证 pnpm 工作区是否正确识别
           echo "📦 验证 pnpm 工作区..."
           pnpm list --depth=0 --json > /dev/null 2>&1 && echo "✅ pnpm 工作区配置正常" || echo "⚠️ pnpm 工作区配置可能有问题"
-          
+
           echo "✅ 依赖验证完成"
 
       - name: Build and Package
+        id: build-package
+        continue-on-error: false
         run: |
           echo '${{ toJson(matrix.batch.items) }}' > batch_items.json
           node scripts/ci/build-and-package.mjs
@@ -124,8 +126,36 @@ jobs:
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_TEAM: ${{ secrets.TURBO_TEAM }}
 
+      - name: Check Build Results
+        if: always()
+        run: |
+          echo "🔍 检查构建结果..."
+          if [ -f "build_results.json" ]; then
+            FAIL_COUNT=$(node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('build_results.json','utf8')); console.log(data.filter(r=>r.status==='failed').length)")
+            if [ "$FAIL_COUNT" -gt 0 ]; then
+              echo "❌ 检测到 $FAIL_COUNT 个包构建失败"
+              echo ""
+              echo "失败详情:"
+              node -e "
+                const fs = require('fs');
+                const data = JSON.parse(fs.readFileSync('build_results.json', 'utf8'));
+                data
+                  .filter(r => r.status === 'failed')
+                  .forEach(r => {
+                    console.log(\`  - \${r.name}: \${r.error}\`);
+                  });
+              "
+              exit 1
+            else
+              echo "✅ 所有包构建成功"
+            fi
+          else
+            echo "⚠️ 构建结果文件不存在，无法验证"
+            exit 1
+          fi
+
       # - name: Generate Diff Description and Update Documentation
-        # if: github.event_name == 'push'
+      # if: github.event_name == 'push'
       #   run: node scripts/ci/generate-diff-docs.mjs
       #   env:
       #     COREAGENT_AK: ${{ secrets.COREAGENT_AK }}
