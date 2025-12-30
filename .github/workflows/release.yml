@@ -7,6 +7,11 @@ on:
     types: [closed]
     branches: ["main", "test-ci-branch"]
   workflow_dispatch:
+    inputs:
+      build_all:
+        description: "构建所有包（忽略变更检测）"
+        required: false
+        type: boolean
 
 jobs:
   plan:
@@ -22,8 +27,23 @@ jobs:
       - name: Generate Plan
         id: set-matrix
         run: |
-          RESULT=$(node scripts/ci/plan-changed-packages.mjs)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.build_all }}" = "true" ]; then
+            echo "🔧 手动触发：构建所有包"
+            RESULT=$(PLAN_ALL=1 node scripts/ci/plan-changed-packages.mjs)
+          else
+            echo "🔧 增量构建：检测变更的包"
+            RESULT=$(node scripts/ci/plan-changed-packages.mjs)
+          fi
           echo "matrix=$RESULT" >> $GITHUB_OUTPUT
+
+          # 解析结果并显示信息
+          BATCH_COUNT=$(echo "$RESULT" | node -e "const d=require('fs').readFileSync(0,'utf8'); const j=JSON.parse(d); console.log(j.include?.length || 0)")
+          if [ "$BATCH_COUNT" = "0" ]; then
+            echo "⚠️ 没有检测到需要构建的包"
+            echo "💡 提示：如果使用 workflow_dispatch，请勾选 '构建所有包' 选项"
+          else
+            echo "✅ 检测到 $BATCH_COUNT 个批次需要构建"
+          fi
 
   build-and-comment:
     needs: plan
