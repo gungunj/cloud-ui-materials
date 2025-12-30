@@ -109,7 +109,6 @@ for (const pkg of items) {
       "types",
     ];
     let foundOutputDir = null;
-    let outputDirPath = null;
 
     for (const dir of possibleOutputDirs) {
       const dirPath = path.join(pkgDir, dir);
@@ -119,7 +118,6 @@ for (const pkg of items) {
           const files = fs.readdirSync(dirPath);
           if (files.length > 0) {
             foundOutputDir = dir;
-            outputDirPath = dirPath;
             break;
           }
         } catch (e) {
@@ -142,54 +140,86 @@ for (const pkg of items) {
       }
     }
 
-    if (!buildSucceeded && foundOutputDir) {
-      console.warn(
-        `⚠️ 警告：构建命令失败（退出码: ${buildExitCode}），但找到了构建产物 ${foundOutputDir}，继续打包...`
+    // 构建命令执行完成后，查找构建命令自动生成的 zip 文件
+    // zip 文件可能生成在包目录或输出目录中
+    console.log(`🔍 查找构建命令生成的 zip 文件...`);
+
+    const possibleZipLocations = [
+      pkgDir, // 包目录根目录
+      path.join(pkgDir, foundOutputDir), // 输出目录（如 dist-theme）
+    ];
+
+    // 查找所有 .zip 文件
+    let foundZipFiles = [];
+    for (const searchDir of possibleZipLocations) {
+      if (fs.existsSync(searchDir)) {
+        try {
+          const files = fs.readdirSync(searchDir);
+          const zipFiles = files.filter((f) => f.endsWith(".zip"));
+          for (const zipFile of zipFiles) {
+            const zipPath = path.join(searchDir, zipFile);
+            const stats = fs.statSync(zipPath);
+            if (stats.isFile() && stats.size > 0) {
+              foundZipFiles.push({
+                name: zipFile,
+                path: zipPath,
+                size: stats.size,
+                dir: searchDir,
+              });
+            }
+          }
+        } catch (e) {
+          // 忽略读取错误
+        }
+      }
+    }
+
+    if (foundZipFiles.length === 0) {
+      throw new Error(
+        `未找到构建命令生成的 zip 文件。已搜索目录: ${possibleZipLocations.join(
+          ", "
+        )}`
       );
     }
 
-    // 创建 zip 文件
-    const zipName = `${pkg.name.replace(/[@/]/g, "-")}-v${version}.zip`;
-    const zipPath = path.join(pkgDir, zipName);
+    // 如果有多个 zip 文件，使用第一个（或可以根据命名规则选择）
+    const zipFile = foundZipFiles[0];
+    console.log(
+      `✅ 找到 zip 文件: ${zipFile.name} (${(zipFile.size / 1024).toFixed(
+        2
+      )} KB) 在 ${path.relative(repoRoot, zipFile.dir)}`
+    );
 
-    // 删除旧的 zip 文件（如果存在）
-    if (fs.existsSync(zipPath)) {
-      fs.unlinkSync(zipPath);
-    }
-
-    execSync(`zip -r ${zipName} ${foundOutputDir}/`, {
-      cwd: pkgDir,
-      stdio: "inherit",
-    });
-
-    // 验证 zip 文件是否成功创建且有内容
-    if (!fs.existsSync(zipPath)) {
-      throw new Error("zip 文件创建失败");
-    }
-
-    const zipStats = fs.statSync(zipPath);
-    if (zipStats.size === 0) {
-      throw new Error("zip 文件为空");
-    }
-
-    if (zipStats.size < 100) {
+    if (foundZipFiles.length > 1) {
+      console.warn(`⚠️ 警告：找到多个 zip 文件，将使用第一个: ${zipFile.name}`);
       console.warn(
-        `⚠️ 警告：zip 文件很小（${zipStats.size} bytes），可能内容不完整`
+        `   其他文件: ${foundZipFiles
+          .slice(1)
+          .map((f) => f.name)
+          .join(", ")}`
       );
     }
 
-    // 移动到 artifacts 目录（确保所有构建命令完成后才打包）
+    // 验证 zip 文件
+    if (zipFile.size < 100) {
+      console.warn(
+        `⚠️ 警告：zip 文件很小（${zipFile.size} bytes），可能内容不完整`
+      );
+    }
+
+    // 移动到 artifacts 目录
     const artifactDir = path.join(repoRoot, "upload_artifacts");
     if (!fs.existsSync(artifactDir))
       fs.mkdirSync(artifactDir, { recursive: true });
-    const finalZipPath = path.join(artifactDir, zipName);
 
-    // 确保 zip 文件存在且有效
-    if (!fs.existsSync(zipPath)) {
-      throw new Error(`zip 文件未找到: ${zipPath}`);
+    const finalZipPath = path.join(artifactDir, zipFile.name);
+
+    // 如果目标位置已存在同名文件，先删除
+    if (fs.existsSync(finalZipPath)) {
+      fs.unlinkSync(finalZipPath);
     }
 
-    fs.renameSync(zipPath, finalZipPath);
+    fs.renameSync(zipFile.path, finalZipPath);
 
     // 验证最终文件
     if (!fs.existsSync(finalZipPath)) {
@@ -197,9 +227,9 @@ for (const pkg of items) {
     }
 
     console.log(
-      `✅ ${pkg.name} 打包成功: ${zipName} (${(zipStats.size / 1024).toFixed(
-        2
-      )} KB) -> ${finalZipPath}`
+      `✅ ${pkg.name} 处理成功: ${zipFile.name} (${(
+        zipFile.size / 1024
+      ).toFixed(2)} KB) -> ${finalZipPath}`
     );
 
     buildResults.push({
@@ -207,13 +237,13 @@ for (const pkg of items) {
       version: version,
       dir: pkgDir,
       relDir: pkg.relDir,
-      zipName: zipName,
+      zipName: zipFile.name,
       status: "success",
       outputDir: foundOutputDir,
-      zipSize: zipStats.size,
+      zipSize: zipFile.size,
     });
 
-    summary += `- ✅ ${pkg.name} (v${version}) - ${zipName}\n`;
+    summary += `- ✅ ${pkg.name} (v${version}) - ${zipFile.name}\n`;
     successCount++;
   } catch (err) {
     // 记录失败，但继续处理其他包
