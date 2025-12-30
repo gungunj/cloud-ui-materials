@@ -38,15 +38,6 @@ namespace extensions.adl.viewComponents {
     month: nasl.core.Integer = 1;
 
     @Prop({
-      title: '周几开始',
-      description: '周几开始',
-      setter: {
-        concept: 'NumberInputSetter',
-      },
-    })
-    weekStart: nasl.core.Integer = 1;
-
-    @Prop({
       title: '周几结束',
       description: '周几结束',
       setter: {
