@@ -4,6 +4,11 @@
   belong: component
   labels: [Runtime]
   attrs:
+    - name: value
+      type: number
+      default: 0
+      description: 初始值
+      title: 初始值
     - name: start
       title: 渐变开始数值
       type: number
