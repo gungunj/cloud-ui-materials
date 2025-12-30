@@ -42,49 +42,54 @@ for (const pkg of items) {
       }
     }
 
-    // 执行构建，使用 Turbo 的增量构建和缓存
-    // --filter 只构建指定包及其依赖
+    // 执行构建，使用 plan 输出中定义的 build 命令
+    // 每个包的 build 属性包含需要执行的命令数组
+    const buildCommands = pkg.build || ["npm run build"];
     let buildSucceeded = false;
-    let turboExitCode = 0;
+    let buildExitCode = 0;
     let buildAttempts = 0;
-    const maxAttempts = 2; // 最多尝试2次：第一次正常构建，如果失败则强制重新构建
+    const maxAttempts = 2; // 最多尝试2次
+
+    console.log(`📋 构建命令: ${buildCommands.join(" && ")}`);
 
     while (buildAttempts < maxAttempts && !buildSucceeded) {
       buildAttempts++;
-      const isForceBuild = buildAttempts > 1;
-      const turboFlags = isForceBuild ? "--force" : "";
+      const isRetry = buildAttempts > 1;
 
       try {
         console.log(
           `🔨 构建尝试 ${buildAttempts}/${maxAttempts}${
-            isForceBuild ? " (强制重新构建)" : ""
+            isRetry ? " (重试)" : ""
           }...`
         );
-        execSync(`turbo run build --filter=${pkg.name} ${turboFlags}`, {
-          stdio: "inherit",
-          cwd: repoRoot,
-          env: {
-            ...process.env,
-            // 启用 Turbo 远程缓存（如果配置了）
-            ...(process.env.TURBO_TOKEN && {
-              TURBO_TOKEN: process.env.TURBO_TOKEN,
-              TURBO_TEAM: process.env.TURBO_TEAM || "default",
-            }),
-          },
-        });
+
+        // 依次执行 build 命令数组中的每个命令
+        for (const cmd of buildCommands) {
+          console.log(`▶️ 执行: ${cmd}`);
+          execSync(cmd, {
+            stdio: "inherit",
+            cwd: pkgDir, // 在包目录中执行命令
+            env: {
+              ...process.env,
+              NODE_ENV: "production",
+              CI: "true",
+            },
+          });
+        }
+
         buildSucceeded = true;
-        turboExitCode = 0;
-        console.log(`✅ Turbo 构建命令成功`);
-      } catch (turboErr) {
-        // Turbo 命令失败，记录退出码
-        turboExitCode = turboErr.status || turboErr.code || 1;
+        buildExitCode = 0;
+        console.log(`✅ 构建命令执行成功`);
+      } catch (buildErr) {
+        // 构建命令失败，记录退出码
+        buildExitCode = buildErr.status || buildErr.code || 1;
         if (buildAttempts < maxAttempts) {
           console.warn(
-            `⚠️ Turbo 构建命令失败（退出码: ${turboExitCode}），将尝试强制重新构建...`
+            `⚠️ 构建命令失败（退出码: ${buildExitCode}），将重试...`
           );
         } else {
           console.warn(
-            `⚠️ Turbo 构建命令最终失败（退出码: ${turboExitCode}），继续检查构建产物...`
+            `⚠️ 构建命令最终失败（退出码: ${buildExitCode}），继续检查构建产物...`
           );
         }
         buildSucceeded = false;
@@ -121,64 +126,22 @@ for (const pkg of items) {
     }
 
     if (!foundOutputDir) {
-      // 构建产物不存在，尝试直接运行构建命令（绕过 Turbo）
-      console.warn(
-        `⚠️ 未找到构建产物，尝试直接运行构建命令（绕过 Turbo 缓存）...`
-      );
-
-      try {
-        // 尝试直接运行 package.json 中的 build 命令
-        const buildScript = pkgJson.scripts?.build;
-        if (buildScript) {
-          console.log(`🔨 直接运行构建命令: ${buildScript}`);
-          execSync(buildScript, {
-            cwd: pkgDir,
-            stdio: "inherit",
-            env: { ...process.env, NODE_ENV: "production" },
-          });
-
-          // 再次检查输出目录
-          for (const dir of possibleOutputDirs) {
-            const dirPath = path.join(pkgDir, dir);
-            if (fs.existsSync(dirPath)) {
-              try {
-                const files = fs.readdirSync(dirPath);
-                if (files.length > 0) {
-                  foundOutputDir = dir;
-                  outputDirPath = dirPath;
-                  console.log(`✅ 直接构建成功，找到输出目录: ${dir}`);
-                  break;
-                }
-              } catch (e) {
-                // 忽略读取错误
-              }
-            }
-          }
-        }
-      } catch (directBuildErr) {
-        console.error(`❌ 直接构建也失败: ${directBuildErr.message}`);
-      }
-
-      // 如果仍然没有找到输出目录，抛出错误
-      if (!foundOutputDir) {
-        const errorMsg = `构建产物不存在：未找到任何输出目录（${possibleOutputDirs.join(
-          ", "
-        )}）`;
-        if (!buildSucceeded) {
-          throw new Error(
-            `${errorMsg}（Turbo 退出码: ${turboExitCode}，直接构建也失败）`
-          );
-        } else {
-          throw new Error(
-            `${errorMsg}（Turbo 显示成功但无产物，可能是缓存问题或构建命令执行失败）`
-          );
-        }
+      // 构建产物不存在，抛出错误
+      const errorMsg = `构建产物不存在：未找到任何输出目录（${possibleOutputDirs.join(
+        ", "
+      )}）`;
+      if (!buildSucceeded) {
+        throw new Error(`${errorMsg}（构建命令退出码: ${buildExitCode}）`);
+      } else {
+        throw new Error(
+          `${errorMsg}（构建命令显示成功但无产物，可能是构建命令执行失败）`
+        );
       }
     }
 
     if (!buildSucceeded && foundOutputDir) {
       console.warn(
-        `⚠️ 警告：Turbo 构建命令失败（退出码: ${turboExitCode}），但找到了构建产物 ${foundOutputDir}，继续打包...`
+        `⚠️ 警告：构建命令失败（退出码: ${buildExitCode}），但找到了构建产物 ${foundOutputDir}，继续打包...`
       );
     }
 
