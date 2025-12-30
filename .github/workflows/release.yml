@@ -127,6 +127,12 @@ jobs:
           pnpm list --depth=0 --json > /dev/null 2>&1 && echo "✅ pnpm 工作区配置正常" || echo "⚠️ pnpm 工作区配置可能有问题"
 
           echo "✅ 依赖验证完成"
+      - name: Install LCAP
+        run: |
+          npm install -g lcap@latest
+          lcap config set platform https://defaulttenant.lcap.hadri.163yun.com
+          lcap config set username admin
+          lcap config set password Admin@123456
 
       - name: Build and Package
         id: build-package
