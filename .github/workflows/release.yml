@@ -12,6 +12,10 @@ on:
         description: "构建所有包（忽略变更检测）"
         required: false
         type: boolean
+      test_package:
+        description: "测试单个包（输入包名，如：cw_countup）"
+        required: false
+        type: string
 
 jobs:
   plan:
@@ -27,7 +31,10 @@ jobs:
       - name: Generate Plan
         id: set-matrix
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.build_all }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.test_package }}" ]; then
+            echo "🧪 测试模式：构建指定包 '${{ github.event.inputs.test_package }}'"
+            RESULT=$(TEST_PACKAGE="${{ github.event.inputs.test_package }}" node scripts/ci/plan-changed-packages.mjs)
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.build_all }}" = "true" ]; then
             echo "🔧 手动触发：构建所有包"
             RESULT=$(PLAN_ALL=1 node scripts/ci/plan-changed-packages.mjs)
           else
@@ -38,11 +45,17 @@ jobs:
 
           # 解析结果并显示信息
           BATCH_COUNT=$(echo "$RESULT" | node -e "const d=require('fs').readFileSync(0,'utf8'); const j=JSON.parse(d); console.log(j.include?.length || 0)")
+          TOTAL_PACKAGES=$(echo "$RESULT" | node -e "const d=require('fs').readFileSync(0,'utf8'); const j=JSON.parse(d); const total = j.include?.reduce((s,b)=>s+(b.items?.length||0),0) || 0; console.log(total)")
+
           if [ "$BATCH_COUNT" = "0" ]; then
             echo "⚠️ 没有检测到需要构建的包"
-            echo "💡 提示：如果使用 workflow_dispatch，请勾选 '构建所有包' 选项"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "💡 提示："
+              echo "   - 勾选 '构建所有包' 选项来构建所有包"
+              echo "   - 或在 '测试单个包' 中输入包名（如：cw_countup）"
+            fi
           else
-            echo "✅ 检测到 $BATCH_COUNT 个批次需要构建"
+            echo "✅ 检测到 $BATCH_COUNT 个批次，共 $TOTAL_PACKAGES 个包需要构建"
           fi
 
   build-and-comment:
