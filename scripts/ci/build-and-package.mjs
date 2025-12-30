@@ -64,8 +64,10 @@ for (const pkg of items) {
         );
 
         // 依次执行 build 命令数组中的每个命令
-        for (const cmd of buildCommands) {
-          console.log(`▶️ 执行: ${cmd}`);
+        // 确保所有命令都执行完成后才继续
+        for (let i = 0; i < buildCommands.length; i++) {
+          const cmd = buildCommands[i];
+          console.log(`▶️ 执行命令 ${i + 1}/${buildCommands.length}: ${cmd}`);
           execSync(cmd, {
             stdio: "inherit",
             cwd: pkgDir, // 在包目录中执行命令
@@ -75,11 +77,12 @@ for (const pkg of items) {
               CI: "true",
             },
           });
+          console.log(`✅ 命令 ${i + 1} 执行完成`);
         }
 
         buildSucceeded = true;
         buildExitCode = 0;
-        console.log(`✅ 构建命令执行成功`);
+        console.log(`✅ 所有构建命令执行成功 (${buildCommands.length} 个命令)`);
       } catch (buildErr) {
         // 构建命令失败，记录退出码
         buildExitCode = buildErr.status || buildErr.code || 1;
@@ -175,17 +178,28 @@ for (const pkg of items) {
       );
     }
 
-    // 移动到 artifacts 目录
+    // 移动到 artifacts 目录（确保所有构建命令完成后才打包）
     const artifactDir = path.join(repoRoot, "upload_artifacts");
     if (!fs.existsSync(artifactDir))
       fs.mkdirSync(artifactDir, { recursive: true });
     const finalZipPath = path.join(artifactDir, zipName);
+
+    // 确保 zip 文件存在且有效
+    if (!fs.existsSync(zipPath)) {
+      throw new Error(`zip 文件未找到: ${zipPath}`);
+    }
+
     fs.renameSync(zipPath, finalZipPath);
+
+    // 验证最终文件
+    if (!fs.existsSync(finalZipPath)) {
+      throw new Error(`zip 文件移动失败: ${finalZipPath}`);
+    }
 
     console.log(
       `✅ ${pkg.name} 打包成功: ${zipName} (${(zipStats.size / 1024).toFixed(
         2
-      )} KB)`
+      )} KB) -> ${finalZipPath}`
     );
 
     buildResults.push({

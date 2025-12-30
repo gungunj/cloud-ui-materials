@@ -193,12 +193,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify Artifacts Before Upload
+        if: always()
+        run: |
+          echo "🔍 验证构建产物..."
+          if [ -d "upload_artifacts" ]; then
+            ZIP_COUNT=$(find upload_artifacts -name "*.zip" -type f | wc -l)
+            if [ "$ZIP_COUNT" -gt 0 ]; then
+              echo "✅ 找到 $ZIP_COUNT 个 zip 文件:"
+              ls -lh upload_artifacts/*.zip | awk '{print "   - " $9 " (" $5 ")"}'
+            else
+              echo "⚠️ 警告：upload_artifacts 目录存在但没有 zip 文件"
+              echo "   目录内容:"
+              ls -la upload_artifacts/ || echo "   目录为空或不存在"
+            fi
+          else
+            echo "⚠️ 警告：upload_artifacts 目录不存在"
+          fi
+
       - name: Upload Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: components-v${{ github.run_number }}-${{ strategy.job-index }}
           path: upload_artifacts/*.zip
           retention-days: 7
+          if-no-files-found: warn
 
       - name: Create or Update GitHub Release
         if: github.event_name == 'push'
