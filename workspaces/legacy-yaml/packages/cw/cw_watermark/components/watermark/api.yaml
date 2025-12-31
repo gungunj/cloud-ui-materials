@@ -23,6 +23,15 @@
       group: 展示属性
       dependency:
       - type: text
+    - name: textAlign
+      type: string
+      default: left
+      title: 文字水印的对齐方式
+      description: 文字水印的对齐方式
+      group: 展示属性
+      options:
+        - value: left
+          title: 左对齐
     - name: color
       type: string
       default: "#000"
