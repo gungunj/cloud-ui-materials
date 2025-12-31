@@ -3,9 +3,6 @@ name: Component PR Artifacts (Fault-Tolerant)
 on:
   push:
     branches: ["test-ci-branch", "main"]
-  pull_request:
-    types: [opened, synchronize, closed]
-    branches: ["main", "test-ci-branch"]
   workflow_dispatch:
     inputs:
       build_all:
@@ -45,20 +42,12 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.build_all }}" = "true" ]; then
             echo "🔧 手动触发：构建所有包"
             RESULT=$(PLAN_ALL=1 node scripts/ci/plan-changed-packages.mjs)
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            if [ "${{ github.event.action }}" = "closed" ] && [ "${{ github.event.pull_request.merged }}" = "true" ]; then
-              echo "🔧 PR 合并：检测 PR 中的变更"
-              # PR 合并时，使用 PR 的 base 和 head 来检测变更
-              BASE_SHA="${{ github.event.pull_request.base.sha }}"
-              HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-              RESULT=$(node scripts/ci/plan-changed-packages.mjs "$BASE_SHA...$HEAD_SHA")
-            else
-              echo "🔧 PR 更新：检测 PR 中的变更（用于生成 PR body）"
-              # PR opened/synchronize 时，使用 base 和 head 来检测变更
-              BASE_SHA="${{ github.event.pull_request.base.sha }}"
-              HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-              RESULT=$(node scripts/ci/plan-changed-packages.mjs "$BASE_SHA...$HEAD_SHA")
-            fi
+          elif [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.action }}" = "closed" ] && [ "${{ github.event.pull_request.merged }}" = "true" ]; then
+            echo "🔧 PR 合并：检测 PR 中的变更"
+            # PR 合并时，使用 PR 的 base 和 head 来检测变更
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            RESULT=$(node scripts/ci/plan-changed-packages.mjs "$BASE_SHA...$HEAD_SHA")
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ -n "${{ github.event.after }}" ]; then
             echo "🔧 Push 事件：检测变更的包"
             # Push 事件时，使用 before 和 after 来检测变更
@@ -84,90 +73,6 @@ jobs:
             echo "✅ 检测到 $BATCH_COUNT 个批次，共 $TOTAL_PACKAGES 个包需要构建"
           fi
 
-  generate-pr-body:
-    needs: plan
-    if: |
-      github.event_name == 'pull_request' &&
-      (github.event.action == 'opened' || github.event.action == 'synchronize')
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Fetch Base Branch
-        run: |
-          git fetch origin ${{ github.event.pull_request.base.ref }}:${{ github.event.pull_request.base.ref }}
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Generate PR Body
-        run: |
-          export GITHUB_BASE_REF="${{ github.event.pull_request.base.ref }}"
-          export GITHUB_HEAD_REF="${{ github.event.pull_request.head.ref }}"
-          export GITHUB_BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          export GITHUB_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          export GITHUB_SERVER_URL="${{ github.server_url }}"
-          export GITHUB_REPOSITORY="${{ github.repository }}"
-          node scripts/ci/generate-pr-body.mjs
-
-      - name: Update PR Body
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const repoRoot = process.cwd();
-            const prBodyPath = path.join(repoRoot, 'pr_body.txt');
-
-            if (!fs.existsSync(prBodyPath)) {
-              console.log('⚠️ PR body 文件不存在，跳过更新');
-              return;
-            }
-
-            const prBody = fs.readFileSync(prBodyPath, 'utf8');
-            const prNumber = context.issue.number;
-
-            try {
-              // 获取当前 PR body
-              const { data: currentPR } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber
-              });
-              
-              // 如果 PR body 已经包含自动生成标记，则替换；否则追加
-              const autoGenMarker = '*此 PR 描述由 CI 自动生成*';
-              let newBody = prBody;
-              
-              if (currentPR.body && currentPR.body.includes(autoGenMarker)) {
-                // 替换自动生成的部分
-                const beforeMarker = currentPR.body.split(autoGenMarker)[0];
-                newBody = beforeMarker + '\n\n' + prBody;
-              } else if (currentPR.body) {
-                // 追加到现有内容后面
-                newBody = currentPR.body + '\n\n---\n\n' + prBody;
-              }
-              
-              await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                body: newBody
-              });
-              
-              console.log(`✅ 已更新 PR #${prNumber} 的 body`);
-            } catch (error) {
-              console.error(`❌ 更新 PR body 失败: ${error.message}`);
-            }
-
   build-and-comment:
     needs: plan
     if: |
@@ -190,6 +95,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # PR 合并时，需要 checkout 合并后的代码
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
@@ -313,7 +222,7 @@ jobs:
             const createRelease = require('./scripts/ci/create-release.js');
             await createRelease({ github, context });
 
-      - name: Find PR Number (for merged PRs)
+      - name: Find PR Number (for push events)
         if: github.event_name == 'push'
         id: find-pr
         uses: actions/github-script@v7
@@ -333,16 +242,20 @@ jobs:
             const commentPR = require('./scripts/ci/comment-pr.js');
 
             let prNumber;
-            let isMerged = false;
+            let isMerged = true;
 
             if (context.eventName === 'pull_request') {
+              // PR 合并事件，直接从 context 获取
               prNumber = context.issue.number;
-              isMerged = context.payload.pull_request?.merged === true || context.payload.action === 'closed';
             } else if (context.eventName === 'push') {
+              // Push 事件，从 find-pr 步骤获取
               prNumber = parseInt('${{ steps.find-pr.outputs.pr_number }}');
-              isMerged = true;
+            }
+
+            if (!prNumber || isNaN(prNumber)) {
+              console.log('⚠️ 无法获取 PR 编号，跳过评论');
+              return;
             }
 
             const jobIndex = '${{ strategy.job-index }}';
-
             await commentPR({ github, context }, prNumber, isMerged, jobIndex);
