@@ -231,6 +231,13 @@ for (const pkg of items) {
       ).toFixed(2)} KB) -> ${finalZipPath}`
     );
 
+    // 生成 Artifacts 链接（如果是在 CI 环境中）
+    const artifactUrl = process.env.GITHUB_RUN_ID
+      ? `${process.env.GITHUB_SERVER_URL || "https://github.com"}/${
+          process.env.GITHUB_REPOSITORY || ""
+        }/actions/runs/${process.env.GITHUB_RUN_ID}`
+      : null;
+
     buildResults.push({
       name: pkg.name,
       version: version,
@@ -240,9 +247,15 @@ for (const pkg of items) {
       status: "success",
       outputDir: foundOutputDir,
       zipSize: zipFile.size,
+      artifactUrl: artifactUrl,
+      downloadUrl: artifactUrl ? `${artifactUrl}#artifacts` : null,
     });
 
-    summary += `- ✅ ${pkg.name} (v${version}) - ${zipFile.name}\n`;
+    summary += `- ✅ ${pkg.name} (v${version}) - ${zipFile.name}`;
+    if (artifactUrl) {
+      summary += ` [下载](${artifactUrl}#artifacts)`;
+    }
+    summary += `\n`;
     successCount++;
   } catch (err) {
     // 记录失败，但继续处理其他包

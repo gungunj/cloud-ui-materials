@@ -51,6 +51,61 @@ module.exports = async ({ github, context }, prNumber, isMerged, jobIndex) => {
   }
 
   try {
+    // 如果是合并后的 PR，更新 PR body 添加包链接
+    if (isMerged) {
+      try {
+        const { data: currentPR } = await github.rest.pulls.get({
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          pull_number: prNumber
+        });
+        
+        // 生成包链接部分
+        let packageLinksSection = '\n\n## 📦 构建产物下载\n\n';
+        try {
+          const buildResults = JSON.parse(fs.readFileSync(path.join(repoRoot, 'build_results.json'), 'utf8'));
+          const successfulBuilds = buildResults.filter(r => r.status === 'success');
+          
+          if (successfulBuilds.length > 0) {
+            packageLinksSection += '### 成功构建的组件包\n\n';
+            for (const result of successfulBuilds) {
+              const downloadLink = result.downloadUrl || 
+                `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}#artifacts`;
+              packageLinksSection += `- ✅ **${result.name}@v${result.version}**\n`;
+              packageLinksSection += `  - 包名: \`${result.zipName}\`\n`;
+              packageLinksSection += `  - 大小: ${(result.zipSize / 1024).toFixed(2)} KB\n`;
+              packageLinksSection += `  - [下载链接](${downloadLink})\n\n`;
+            }
+          }
+        } catch (e) {
+          console.warn(`⚠️ 读取构建结果失败: ${e.message}`);
+        }
+        
+        // 更新 PR body
+        let newBody = currentPR.body || '';
+        
+        // 如果已经有构建产物部分，替换它；否则追加
+        const packageSectionRegex = /\n\n## 📦 构建产物下载\n\n[\s\S]*?(?=\n\n---|\n\n## |$)/;
+        if (packageSectionRegex.test(newBody)) {
+          newBody = newBody.replace(packageSectionRegex, packageLinksSection);
+        } else {
+          newBody += packageLinksSection;
+        }
+        
+        await github.rest.pulls.update({
+          owner: context.repo.owner,
+          repo: context.repo.repo,
+          pull_number: prNumber,
+          body: newBody
+        });
+        
+        console.log(`✅ 已更新 PR #${prNumber} 的 body，添加包链接`);
+      } catch (updateError) {
+        console.warn(`⚠️ 更新 PR body 失败: ${updateError.message}，将添加评论作为备选`);
+      }
+    }
+    
+    // 添加评论
     await github.rest.issues.createComment({
       issue_number: prNumber,
       owner: context.repo.owner,
