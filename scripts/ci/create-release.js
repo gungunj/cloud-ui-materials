@@ -58,7 +58,7 @@ module.exports = async ({ github, context }) => {
         owner: context.repo.owner,
         repo: context.repo.repo,
         tag_name: releaseTag,
-        name: `组件发布 - ${new Date().toISOString().split("T")[0]}`,
+        name: `组件发布（${successfulBuilds.length}个） - ${new Date().toISOString().split("T")[0]}`,
         body: releaseBody,
         draft: false,
         prerelease: false,
