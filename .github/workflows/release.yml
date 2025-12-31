@@ -37,6 +37,16 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.build_all }}" = "true" ]; then
             echo "🔧 手动触发：构建所有包"
             RESULT=$(PLAN_ALL=1 node scripts/ci/plan-changed-packages.mjs)
+          elif [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.action }}" = "closed" ] && [ "${{ github.event.pull_request.merged }}" = "true" ]; then
+            echo "🔧 PR 合并：检测 PR 中的变更"
+            # PR 合并时，使用 PR 的 base 和 head 来检测变更
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            RESULT=$(node scripts/ci/plan-changed-packages.mjs "$BASE_SHA...$HEAD_SHA")
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ -n "${{ github.event.after }}" ]; then
+            echo "🔧 Push 事件：检测变更的包"
+            # Push 事件时，使用 before 和 after 来检测变更
+            RESULT=$(node scripts/ci/plan-changed-packages.mjs "${{ github.event.before }}...${{ github.event.after }}")
           else
             echo "🔧 增量构建：检测变更的包"
             RESULT=$(node scripts/ci/plan-changed-packages.mjs)
